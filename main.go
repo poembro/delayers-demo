@@ -53,8 +53,8 @@ func Middleware(next http.Handler) http.Handler {
 		}
 		//tokenInfo, err := util.DecryptToken(token)
 		//if err != nil {
-		//	OutJson(w, -1, "error", "认证失败")
-		//	return
+		//    OutJson(w, -1, "error", "认证失败")
+		//    return
 		//}
 
 		ctx := context.WithValue(r.Context(), "active_id", 1)
@@ -129,13 +129,12 @@ func main() {
 		cli := delayers.NewClient(r.RdsConf)
 		for {
 			msg, err := cli.BPop("order", 10)
-
 			if err != nil {
 				log.Println("--有报错---->", err.Error())
 				//break
 			}
-
 			if msg != nil {
+				// 更多自己的逻辑  TODO
 				log.Println("有订单到期了: id:", msg.ID, "  topic:", msg.Topic, "   body:", msg.Body)
 			}
 		}

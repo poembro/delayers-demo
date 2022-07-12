@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	//logFile, err := os.OpenFile("./c.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	//if err != nil {
+	//    log.Panic("打开日志文件异常")
+	//}
+	//log.SetOutput(logFile)
+}
+
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Middleware", r.Method, r.URL.String(), r.UserAgent())

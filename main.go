@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
 	"delayers-demo/delayers"
-	"fmt"
+	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func init() {
@@ -21,6 +23,29 @@ func init() {
 	//    log.Panic("打开日志文件异常")
 	//}
 	//log.SetOutput(logFile)
+}
+
+type OutData struct {
+	Success bool        `json:"success"`
+	Code    int         `json:"resultCode"`    //接口响应状态码
+	Msg     string      `json:"resultMessage"` //接口响应信息
+	Data    interface{} `json:"data"`
+}
+
+func OutJson(w http.ResponseWriter, code int, msg string, data interface{}) error {
+	w.WriteHeader(200)
+	dst := &OutData{
+		Success: true,
+		Code:    code,
+		Msg:     msg,
+		Data:    data,
+	}
+	err := json.NewEncoder(w).Encode(dst)
+	if err != nil {
+		log.Println(err)
+	}
+
+	return err
 }
 
 func Middleware(next http.Handler) http.Handler {
@@ -97,34 +122,71 @@ func (s *Route) Ping(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Route) Push(w http.ResponseWriter, r *http.Request) {
-	// 接收参数TODO
-	cli := delayers.NewClient(s.RdsConf)
-	msg := delayers.Message{
-		ID:    fmt.Sprintf("%x", md5.Sum([]byte(time.Now().String()))),
-		Topic: "order",
-		Body:  "12942829372519756200",
+	var req struct {
+		Topic            string `json:"topic"`               // topic
+		Body             string `json:"body"`                // body
+		DelayTime        int    `json:"delay_time"`          // 延迟多久后触发
+		ReadyMaxLifetime int    `json:"ready_max_life_time"` // 最大生存时间(多久后失效)
 	}
-	_, err := cli.Push(msg, 10, 600)
-	if err != nil {
-		w.Write([]byte(err.Error()))
+	body, _ := ioutil.ReadAll(r.Body)
+	json.Unmarshal(body, &req)
+
+	if req.Topic == "" || req.Body == "" || req.DelayTime == 0 || req.ReadyMaxLifetime == 0 {
+		OutJson(w, -1, "error topic or body", nil)
 		return
 	}
 
-	w.Write([]byte(`done`))
+	cli := delayers.NewClient(s.RdsConf)
+	msg := delayers.Message{
+		ID:    uuid.New().String(),
+		Topic: req.Topic, //"order",
+		Body:  req.Body,  //"12942829372519756200",
+	}
+	_, err := cli.Push(msg, req.DelayTime, req.ReadyMaxLifetime) // cli.Push(msg,10, 600)
+	if err != nil {
+		OutJson(w, -1, err.Error(), nil)
+		return
+	}
+	OutJson(w, 200, "success", msg)
 	return
 }
 
 func (s *Route) Remove(w http.ResponseWriter, r *http.Request) {
-	// 接收参数TODO
-	cli := delayers.NewClient(s.RdsConf)
-	_, err := cli.Remove("12942829372519756200")
-	if err != nil {
-		w.Write([]byte(err.Error()))
+	var req struct {
+		ID string `json:"id"` // body
+	}
+	body, _ := ioutil.ReadAll(r.Body)
+	json.Unmarshal(body, &req)
+
+	if req.ID == "" {
+		OutJson(w, -1, "error id", nil)
 		return
 	}
 
-	w.Write([]byte(`done`))
+	cli := delayers.NewClient(s.RdsConf)
+	_, err := cli.Remove(req.ID) // 28131156741517
+	if err != nil {
+		OutJson(w, -1, err.Error(), nil)
+		return
+	}
+
+	OutJson(w, 200, "success", req)
 	return
+}
+
+func consumer(r *Route) {
+	cli := delayers.NewClient(r.RdsConf)
+	for {
+		msg, err := cli.BPop("order", 10)
+		if err != nil {
+			log.Println("--error---->", err.Error())
+			//break
+		}
+		if msg != nil {
+			// 更多自己的逻辑  TODO
+			log.Println("有订单到期了: id:", msg.ID, "  topic:", msg.Topic, "   body:", msg.Body)
+		}
+	}
 }
 
 func main() {
@@ -133,22 +195,8 @@ func main() {
 	t := delayers.NewTimer(r.RdsConf)
 	t.Start()
 
-	// 一直消费 order 队列
-	go func(r *Route) {
-		cli := delayers.NewClient(r.RdsConf)
-		for {
-			msg, err := cli.BPop("order", 10)
-			if err != nil {
-				log.Println("--有报错---->", err.Error())
-				//break
-			}
-			if msg != nil {
-				// 更多自己的逻辑  TODO
-				log.Println("有订单到期了: id:", msg.ID, "  topic:", msg.Topic, "   body:", msg.Body)
-			}
-		}
-
-	}(r)
+	// 消费 order 队列
+	go consumer(r)
 
 	// api路由
 	http.Handle("/ping", Middleware(http.HandlerFunc(r.Ping)))

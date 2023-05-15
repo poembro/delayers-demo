@@ -1,8 +1,6 @@
-package delayers
+package delay
 
 import (
-	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -10,7 +8,7 @@ import (
 )
 
 func init() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	//log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	//logFile, err := os.OpenFile("./c.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	//if err != nil {
 	//    log.Panic("打开日志文件异常")
@@ -33,8 +31,7 @@ type Delayer struct {
 
 // redis 节点数据
 type Redis struct {
-	Host            string
-	Port            string
+	Addr            string
 	Database        int
 	Password        string
 	MaxIdle         int
@@ -54,9 +51,9 @@ type Timer struct {
 }
 
 const (
-	KEY_JOB_POOL       = "delayer:job_pool"
-	PREFIX_JOB_BUCKET  = "delayer:job_bucket:"
-	PREFIX_READY_QUEUE = "delayer:ready_queue:"
+	KEY_JOB_POOL       = "game_wuliangye_crontab_topic_v3:delayer:job_pool"
+	PREFIX_JOB_BUCKET  = "game_wuliangye_crontab_topic_v3:delayer:job_bucket:"
+	PREFIX_READY_QUEUE = "game_wuliangye_crontab_topic_v3:delayer:ready_queue:"
 )
 
 func NewTimer(r *Redis) *Timer {
@@ -70,43 +67,20 @@ func NewTimer(r *Redis) *Timer {
 	t := &Timer{
 		Config: c,
 	}
-	t.Init()
-	//timer.Start()
+	t.Init()  // 初始化连接
+	t.Start() // 开始定时转移
 	return t
 }
 
 // 初始化
 func (p *Timer) Init() {
-	pool := &redis.Pool{
-		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", p.Config.Redis.Host+":"+p.Config.Redis.Port)
-			if err != nil {
-				return nil, err
-			}
-			if p.Config.Redis.Password != "" {
-				if _, err := c.Do("AUTH", p.Config.Redis.Password); err != nil {
-					c.Close()
-					return nil, err
-				}
-			}
-			if _, err := c.Do("SELECT", p.Config.Redis.Database); err != nil {
-				c.Close()
-				return nil, err
-			}
-			return c, nil
-		},
-		MaxIdle:         p.Config.Redis.MaxIdle,
-		MaxActive:       p.Config.Redis.MaxActive,
-		IdleTimeout:     time.Duration(p.Config.Redis.IdleTimeout) * time.Second,
-		MaxConnLifetime: time.Duration(p.Config.Redis.ConnMaxLifetime) * time.Second,
-	}
-	p.Pool = pool
+	p.Pool = NewPool(p.Config.Redis)
 	handleError := func(err error, funcName string, data string) {
 		if err != nil {
 			if data != "" {
 				data = ", [" + data + "]"
 			}
-			log.Println(fmt.Sprintf("FAILURE: func %s, %s%s.", funcName, err.Error(), data), false)
+			//log.Println(fmt.Sprintf("FAILURE: func %s, %s%s.", funcName, err.Error(), data), false)
 		}
 	}
 	p.HandleError = handleError
@@ -211,7 +185,7 @@ func (p *Timer) moveJobToReadyQueue(jobIDs []string, topic string) {
 		return
 	}
 	// 打印日志
-	log.Println(fmt.Sprintf("Job is ready, Topic: %s, IDs: [%s]", topic, jobIDsStr))
+	//log.Println(fmt.Sprintf("Job is ready, Topic: %s, IDs: [%s]", topic, jobIDsStr))
 }
 
 // 开启事务
@@ -246,5 +220,6 @@ func (p *Timer) addReadyQueue(conn redis.Conn, jobIDs []string, topic string) er
 
 // 执行
 func (p *Timer) Stop() {
+	p.Pool.Close()
 	p.Ticker.Stop()
 }

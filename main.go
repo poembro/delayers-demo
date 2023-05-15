@@ -2,18 +2,16 @@ package main
 
 import (
 	"context"
-	"delayers-demo/delayers"
+	"delayers-demo/delay"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
+
 	"syscall"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 func init() {
@@ -99,22 +97,39 @@ func Middleware(next http.Handler) http.Handler {
 }
 
 type Route struct {
-	RdsConf *delayers.Redis
+	cli *delay.Client
 }
 
 func NewRoute() *Route {
-	return &Route{
-		RdsConf: &delayers.Redis{
-			Host:            "10.0.41.145",
-			Port:            "6379",
-			Database:        12,
-			Password:        "",
-			MaxIdle:         2,    //最大空闲连接数
-			MaxActive:       20,   //最大激活连接数
-			IdleTimeout:     3600, //空闲连接超时时间, 单位秒
-			ConnMaxLifetime: 3600, //连接最大生存时间, 单位秒
-		},
+	rdsConf := &delay.Redis{
+		Addr:            "10.0.41.145:6379",
+		Database:        12,
+		Password:        "NOjyVFBqlCvhWM",
+		MaxIdle:         2,    //最大空闲连接数
+		MaxActive:       20,   //最大激活连接数
+		IdleTimeout:     3600, //空闲连接超时时间, 单位秒
+		ConnMaxLifetime: 3600, //连接最大生存时间, 单位秒
 	}
+
+	r := &Route{
+		cli: delay.NewClient(rdsConf),
+	}
+
+	go func(r *Route) {
+		for {
+			msg, err := r.cli.BPop("order", 10)
+			if err != nil {
+				log.Println("--error---->", err.Error())
+				//break
+			}
+			if msg != nil {
+				// 更多自己的逻辑  TODO
+				log.Println("有订单到期了: id:", msg.ID, "  topic:", msg.Topic, "   body:", msg.Body)
+			}
+		}
+	}(r)
+
+	return r
 }
 
 func (s *Route) Ping(w http.ResponseWriter, r *http.Request) {
@@ -136,13 +151,7 @@ func (s *Route) Push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cli := delayers.NewClient(s.RdsConf)
-	msg := delayers.Message{
-		ID:    uuid.New().String(),
-		Topic: req.Topic, //"order",
-		Body:  req.Body,  //"12942829372519756200",
-	}
-	_, err := cli.Push(msg, req.DelayTime, req.ReadyMaxLifetime) // cli.Push(msg,10, 600)
+	msg, err := s.cli.Push(req.Topic, req.Body, req.DelayTime, req.ReadyMaxLifetime) // cli.Push(topicmsg,10, 600)
 	if err != nil {
 		OutJson(w, -1, err.Error(), nil)
 		return
@@ -163,8 +172,7 @@ func (s *Route) Remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cli := delayers.NewClient(s.RdsConf)
-	_, err := cli.Remove(req.ID) // 28131156741517
+	_, err := s.cli.Remove(req.ID) // 28131156741517
 	if err != nil {
 		OutJson(w, -1, err.Error(), nil)
 		return
@@ -174,30 +182,8 @@ func (s *Route) Remove(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-func consumer(r *Route) {
-	cli := delayers.NewClient(r.RdsConf)
-	for {
-		msg, err := cli.BPop("order", 10)
-		if err != nil {
-			log.Println("--error---->", err.Error())
-			//break
-		}
-		if msg != nil {
-			// 更多自己的逻辑  TODO
-			log.Println("有订单到期了: id:", msg.ID, "  topic:", msg.Topic, "   body:", msg.Body)
-		}
-	}
-}
-
 func main() {
 	r := NewRoute()
-
-	t := delayers.NewTimer(r.RdsConf)
-	t.Start()
-
-	// 消费 order 队列
-	go consumer(r)
-
 	// api路由
 	http.Handle("/ping", Middleware(http.HandlerFunc(r.Ping)))
 	http.Handle("/push", Middleware(http.HandlerFunc(r.Push)))
@@ -210,31 +196,34 @@ func main() {
 		Addr:    listen,
 		Handler: http.DefaultServeMux,
 	}
-	//使用WaitGroup同步Goroutine
-	var wg sync.WaitGroup
-	exit := make(chan os.Signal)
-	signal.Notify(exit, syscall.SIGINT, syscall.SIGTERM)
+
+	// make sure idle cometions returned
+	processed := make(chan struct{})
 	go func() {
-		<-exit
-		wg.Add(1)
-		//使用context控制 srv.Shutdown 的超时时间
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		err := srv.Shutdown(ctx)
-		if err != nil {
-			log.Println(err)
+		defer close(processed)
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
+		for {
+			sigStr := <-c
+			switch sigStr {
+			case syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT:
+				ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+				defer cancel()
+				srv.Shutdown(ctx)
+
+				r.cli.Close() //关闭连接
+				time.Sleep(time.Second)
+				return
+			case syscall.SIGHUP:
+			default:
+				return
+			}
 		}
-		//关闭mysql连接 TODO
-		t.Stop()
-
-		wg.Done()
 	}()
-
-	err := srv.ListenAndServe() //设置监听的端口
-
-	wg.Wait()
-	if err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil {
 		panic(err)
 	}
-	log.Println("StartHttpServer", "msg", "优雅的关闭服务")
+
+	<-processed
 }

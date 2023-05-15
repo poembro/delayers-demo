@@ -104,7 +104,7 @@ func NewRoute() *Route {
 	rdsConf := &delay.Redis{
 		Addr:            "10.0.41.145:6379",
 		Database:        12,
-		Password:        "NOjyVFBqlCvhWM",
+		Password:        "",
 		MaxIdle:         2,    //最大空闲连接数
 		MaxActive:       20,   //最大激活连接数
 		IdleTimeout:     3600, //空闲连接超时时间, 单位秒
